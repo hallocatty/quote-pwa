@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <title>展会报价单</title>
+  <meta name="theme-color" content="#2563eb" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="展会报价" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-title">展会报价单</div>
+    <div class="topbar-status" id="online-status">离线可用</div>
+  </header>
+
+  <main id="app-content" class="app-content"></main>
+
+  <nav class="tabbar">
+    <button data-tab="quote" class="active">
+      <span class="tab-icon">🧾</span><span>报价</span>
+    </button>
+    <button data-tab="products">
+      <span class="tab-icon">📦</span><span>价目表</span>
+    </button>
+    <button data-tab="history">
+      <span class="tab-icon">🕘</span><span>历史</span>
+    </button>
+    <button data-tab="settings">
+      <span class="tab-icon">⚙️</span><span>设置</span>
+    </button>
+  </nav>
+
+  <div id="modal-backdrop" class="modal-backdrop">
+    <div id="modal-card" class="modal-card"></div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- 离屏渲染容器，用于生成 PDF 截图，不在可视区域内 -->
+  <div id="pdf-render-host" class="pdf-render-host" aria-hidden="true"></div>
+
+  <script src="vendor/html2canvas.min.js"></script>
+  <script src="vendor/jspdf.umd.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
