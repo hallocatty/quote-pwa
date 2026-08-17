@@ -1,4 +1,4 @@
-const CACHE_NAME = "quote-pwa-v1";
+const CACHE_NAME = "quote-pwa-v2";
 const ASSETS = [
   "./",
   "./index.html",
@@ -8,6 +8,7 @@ const ASSETS = [
   "./js/db.js",
   "./js/pricing.js",
   "./js/pdf.js",
+  "./js/numbering.js",
   "./vendor/html2canvas.min.js",
   "./vendor/jspdf.umd.min.js",
   "./icons/icon-192.png",

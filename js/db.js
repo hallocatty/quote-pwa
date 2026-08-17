@@ -27,6 +27,7 @@ function uid() {
 const DEFAULT_SETTINGS = {
   companyName: "我的公司",
   companyContact: "",
+  entity: "LB",
   baseCurrency: "CNY",
   currencies: [
     { code: "CNY", symbol: "¥", rate: 1 },

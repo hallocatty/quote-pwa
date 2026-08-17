@@ -26,6 +26,7 @@ function buildQuoteHtml(quote, settings) {
         <div class="pdf-title">报价单 QUOTATION</div>
       </div>
       <div class="pdf-meta">
+        ${quote.number ? `<div>编号：${escapeHtml(quote.number)}</div>` : ""}
         <div>客户 / 公司：${escapeHtml(quote.customer.company || "")}</div>
         <div>联系人：${escapeHtml(quote.customer.name || "")}　联系方式：${escapeHtml(
     quote.customer.contact || ""
@@ -112,9 +113,8 @@ export async function exportQuotePdf(quote, settings) {
 
   host.innerHTML = "";
 
-  const fileName = `报价单-${(quote.customer.company || quote.customer.name || "客户").replace(
-    /[\\/:*?"<>|]/g,
-    "_"
-  )}-${new Date(quote.createdAt || Date.now()).toISOString().slice(0, 10)}.pdf`;
+  const fileName = `报价单-${quote.number ? quote.number + "-" : ""}${(
+    quote.customer.company || quote.customer.name || "客户"
+  ).replace(/[\\/:*?"<>|]/g, "_")}-${new Date(quote.createdAt || Date.now()).toISOString().slice(0, 10)}.pdf`;
   pdf.save(fileName);
 }

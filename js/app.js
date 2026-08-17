@@ -1,16 +1,33 @@
 import { db } from "./db.js";
 import { tierPrice, convert, formatMoney, describeTiers } from "./pricing.js";
 import { exportQuotePdf } from "./pdf.js";
+import { requestQuoteNumber, requestRevisionNumber } from "./numbering.js";
 
 function emptyQuote(baseCurrency) {
   return {
     id: null,
+    number: null,
+    baseNumber: null,
     customer: { name: "", company: "", contact: "" },
     currency: baseCurrency || "CNY",
     items: [],
     note: "",
     total: 0,
   };
+}
+
+// 保存/导出时确保报价单有正式编号；离线或接口异常时不阻塞本地保存，留到历史记录里手动重试。
+async function ensureQuoteNumber(quote) {
+  if (quote.number) return quote;
+  try {
+    const number = await requestQuoteNumber(state.settings.entity || "LB");
+    quote.number = number;
+    quote.baseNumber = number;
+  } catch (err) {
+    console.error(err);
+    toast("暂时无法获取正式编号（可能未联网），可稍后在历史记录里重试");
+  }
+  return quote;
 }
 
 const initialSettings = db.getSettings();
@@ -138,6 +155,7 @@ function renderQuoteTab() {
           ? `<div class="banner">正在编辑历史报价单 <button class="link" data-action="quote-new">新建一份</button></div>`
           : ""
       }
+      ${q.number ? `<div class="banner">编号 ${esc(q.number)}</div>` : ""}
       <div class="field-row">
         <label>币种</label>
         <select data-action="currency-change">${currencyOptions}</select>
@@ -466,9 +484,14 @@ function renderHistoryTab() {
           <div class="history-card">
             <div class="history-main" data-action="history-open" data-id="${q.id}">
               <div class="item-name">${esc(q.customer.company || q.customer.name || "未命名客户")}</div>
-              <div class="item-sub">${dateStr} · ${esc(q.items.length)} 项商品</div>
+              <div class="item-sub">${q.number ? esc(q.number) + " · " : ""}${dateStr} · ${esc(q.items.length)} 项商品</div>
             </div>
             <div class="history-amount">${formatMoney(q.total, q.currencies || state.settings.currencies, q.currency)}</div>
+            ${
+              q.number
+                ? `<button class="icon-btn" title="生成修订版" data-action="history-revise" data-id="${q.id}">R+</button>`
+                : `<button class="icon-btn" title="重新获取编号" data-action="history-get-number" data-id="${q.id}">编号</button>`
+            }
             <button class="icon-btn danger" data-action="history-delete" data-id="${q.id}">✕</button>
           </div>`;
                 })
@@ -498,6 +521,35 @@ function renderHistoryTab() {
       }
     })
   );
+  appContent.querySelectorAll('[data-action="history-get-number"]').forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const q = state.quotes.find((x) => x.id === btn.dataset.id);
+      if (!q) return;
+      await ensureQuoteNumber(q);
+      if (q.number) {
+        db.saveQuote(q);
+        state.quotes = db.getQuotes();
+        renderHistoryTab();
+        toast("已获取编号 " + q.number);
+      }
+    })
+  );
+  appContent.querySelectorAll('[data-action="history-revise"]').forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const q = state.quotes.find((x) => x.id === btn.dataset.id);
+      if (!q || !q.baseNumber) return;
+      try {
+        q.number = await requestRevisionNumber(q.baseNumber);
+        db.saveQuote(q);
+        state.quotes = db.getQuotes();
+        renderHistoryTab();
+        toast("已生成修订版 " + q.number);
+      } catch (err) {
+        console.error(err);
+        toast("生成修订版失败，请检查网络");
+      }
+    })
+  );
 }
 
 // ================= SETTINGS TAB =================
@@ -510,6 +562,12 @@ function renderSettingsTab() {
       <input id="s-company" value="${esc(s.companyName)}" />
       <label>联系方式</label>
       <input id="s-contact" value="${esc(s.companyContact)}" />
+      <label>报价单编号主体</label>
+      <select id="s-entity">
+        <option value="LB" ${s.entity === "LB" ? "selected" : ""}>LB</option>
+        <option value="NC" ${s.entity === "NC" ? "selected" : ""}>NC</option>
+      </select>
+      <p class="hint-text">决定生成的正式编号前缀（如 LB-QT2608001），保存/导出报价单时自动向服务器申请。</p>
     </section>
 
     <section class="panel">
@@ -562,6 +620,9 @@ function renderSettingsTab() {
   });
   document.getElementById("s-contact").addEventListener("change", (e) => {
     state.settings = db.saveSettings({ ...state.settings, companyContact: e.target.value });
+  });
+  document.getElementById("s-entity").addEventListener("change", (e) => {
+    state.settings = db.saveSettings({ ...state.settings, entity: e.target.value });
   });
 
   appContent.querySelectorAll('[data-action="currency-rate"]').forEach((input) =>
@@ -657,7 +718,7 @@ function handleImportFile(e) {
 }
 
 // ================= global click delegation =================
-document.addEventListener("click", (e) => {
+document.addEventListener("click", async (e) => {
   const el = e.target.closest("[data-action]");
   if (!el) return;
   const action = el.dataset.action;
@@ -702,6 +763,7 @@ document.addEventListener("click", (e) => {
         toast("请先添加商品");
         return;
       }
+      await ensureQuoteNumber(q);
       const saved = db.saveQuote({ ...q, id: state.editingQuoteId });
       state.editingQuoteId = saved.id;
       state.currentQuote.id = saved.id;
@@ -718,6 +780,7 @@ document.addEventListener("click", (e) => {
         toast("请先添加商品");
         return;
       }
+      await ensureQuoteNumber(q);
       if (!q.id) {
         const saved = db.saveQuote({ ...q });
         state.editingQuoteId = saved.id;
@@ -725,7 +788,11 @@ document.addEventListener("click", (e) => {
         state.currentQuote.createdAt = saved.createdAt;
         state.quotes = db.getQuotes();
         persistDraft();
+      } else {
+        db.saveQuote({ ...q, id: state.editingQuoteId });
+        state.quotes = db.getQuotes();
       }
+      renderQuoteTab();
       exportQuotePdf(state.currentQuote, state.settings)
         .then(() => toast("PDF 已导出"))
         .catch((err) => {
