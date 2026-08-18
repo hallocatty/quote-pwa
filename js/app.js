@@ -10,6 +10,7 @@ function emptyQuote(baseCurrency) {
     id: null,
     number: null,
     baseNumber: null,
+    docType: "QT",
     customer: {
       name: "",
       company: "",
@@ -32,7 +33,7 @@ function emptyQuote(baseCurrency) {
 async function ensureQuoteNumber(quote) {
   if (quote.number) return quote;
   try {
-    const number = await requestQuoteNumber(state.settings.entity || "LB");
+    const number = await requestQuoteNumber(state.settings.entity || "LB", quote.docType || "QT");
     quote.number = number;
     quote.baseNumber = number;
   } catch (err) {
@@ -169,6 +170,10 @@ function renderQuoteTab() {
           : ""
       }
       ${q.number ? `<div class="banner">编号 ${esc(q.number)}</div>` : ""}
+      <div class="doctype-toggle">
+        <button type="button" class="${q.docType !== "EQ" ? "active" : ""}" data-action="doctype-set" data-type="QT" ${q.number ? "disabled" : ""}>报价 Quotation</button>
+        <button type="button" class="${q.docType === "EQ" ? "active" : ""}" data-action="doctype-set" data-type="EQ" ${q.number ? "disabled" : ""}>询价 Enquiry</button>
+      </div>
       <div class="field-row">
         <label>币种</label>
         <select data-action="currency-change">${currencyOptions}</select>
@@ -244,6 +249,13 @@ function renderQuoteTab() {
     state.currentQuote.currency = e.target.value;
     renderQuoteTab();
   });
+  appContent.querySelectorAll('[data-action="doctype-set"]').forEach((btn) =>
+    btn.addEventListener("click", () => {
+      state.currentQuote.docType = btn.dataset.type;
+      persistDraft();
+      renderQuoteTab();
+    })
+  );
   bindTextInput("cust-company", (v) => (state.currentQuote.customer.company = v));
   bindTextInput("cust-name", (v) => (state.currentQuote.customer.name = v));
   bindTextInput("cust-contact", (v) => (state.currentQuote.customer.contact = v));

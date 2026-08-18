@@ -12,10 +12,10 @@ async function callApi(path, options) {
   return data;
 }
 
-export async function requestQuoteNumber(entity) {
+export async function requestQuoteNumber(entity, docType) {
   const data = await callApi("/api/numbers", {
     method: "POST",
-    body: JSON.stringify({ entity }),
+    body: JSON.stringify({ entity, docType }),
   });
   return data.number;
 }
