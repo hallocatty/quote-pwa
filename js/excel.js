@@ -107,7 +107,13 @@ export async function exportQuoteExcel(quote, settings, products = []) {
     ],
     [`邮箱 Email: ${quote.customer.email || ""}`, "", `网址 Website: ${quote.customer.website || ""}`],
     [`地址 Address: ${quote.customer.address || ""}`],
-    [`日期 Date: ${dateStr}`, "", `币种 Currency: ${quote.currency}`],
+    [
+      `日期 Date: ${dateStr}`,
+      "",
+      `币种 Currency: ${quote.currency}`,
+      "",
+      quote.incoterm ? `贸易术语 Incoterms: ${quote.incoterm}` : "",
+    ],
     [],
     ["#", "商品名称 Item", "规格 Spec", "单位 Unit", "数量 Qty", "单价 Unit Price", "小计 Subtotal"],
     ...quote.items.map((it, i) => [

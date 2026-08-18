@@ -34,10 +34,10 @@ export function formatMoney(amount, currencies, code) {
   })}`;
 }
 
-// 把选中的 SKU 规格（颜色/克重容量）拼成一行展示文本。成分/配方是商品级属性，不在这里，见 describeItemSpec。
+// 把选中的 SKU 规格（颜色/克重容量/MOQ）拼成一行展示文本。成分/配方是商品级属性，不在这里，见 describeItemSpec。
 export function skuLabel(sku) {
   if (!sku) return "";
-  return [sku.color, sku.weight].filter(Boolean).join(" / ");
+  return [sku.color, sku.weight, sku.moq ? `MOQ ${sku.moq}` : ""].filter(Boolean).join(" / ");
 }
 
 // 报价单明细行/PDF 用：成分配方（商品级，规格间共享）+ 具体规格拼成完整说明文字

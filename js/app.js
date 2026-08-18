@@ -4,6 +4,18 @@ import { exportQuotePdf, buildQuoteHtml } from "./pdf.js";
 import { requestQuoteNumber, requestRevisionNumber } from "./numbering.js";
 import { recognizeCardText, parseCardText } from "./ocr.js";
 import { exportQuoteExcel, downloadProductTemplate, parseProductExcelFile } from "./excel.js";
+import {
+  putImage,
+  getImageURL,
+  resolveImageURLs,
+  deleteImage,
+  getStorageEstimate,
+  enforceProductImageLRU,
+  getPendingImages,
+} from "./imagestore.js";
+import { syncPendingImages } from "./sync.js";
+
+const INCOTERM_OPTIONS = ["EXW", "FOB", "DDP", "CIF", "含税含运费", "裸价"];
 
 function emptyQuote(baseCurrency) {
   return {
@@ -11,6 +23,7 @@ function emptyQuote(baseCurrency) {
     number: null,
     baseNumber: null,
     docType: "QT",
+    incoterm: "",
     customer: {
       name: "",
       company: "",
@@ -19,7 +32,7 @@ function emptyQuote(baseCurrency) {
       email: "",
       address: "",
       website: "",
-      cardImage: null,
+      cardImageId: null,
       cardText: null,
     },
     currency: baseCurrency || "CNY",
@@ -127,9 +140,10 @@ function render() {
 }
 
 // ================= QUOTE TAB =================
-function renderQuoteTab() {
+async function renderQuoteTab() {
   const q = state.currentQuote;
   recomputeQuote();
+  const cardImageUrl = q.customer.cardImageId ? await getImageURL(q.customer.cardImageId) : null;
   const currencyOptions = state.settings.currencies
     .map(
       (c) =>
@@ -175,9 +189,20 @@ function renderQuoteTab() {
         <button type="button" class="${q.docType !== "EQ" ? "active" : ""}" data-action="doctype-set" data-type="QT" ${q.number ? "disabled" : ""}>报价 Quotation</button>
         <button type="button" class="${q.docType === "EQ" ? "active" : ""}" data-action="doctype-set" data-type="EQ" ${q.number ? "disabled" : ""}>询价 Enquiry</button>
       </div>
-      <div class="field-row">
-        <label>币种</label>
-        <select data-action="currency-change">${currencyOptions}</select>
+      <div class="field-row two">
+        <div>
+          <label>币种</label>
+          <select data-action="currency-change">${currencyOptions}</select>
+        </div>
+        <div>
+          <label>贸易术语 Incoterms</label>
+          <select data-action="incoterm-change">
+            <option value="">不指定</option>
+            ${INCOTERM_OPTIONS.map(
+              (t) => `<option value="${t}" ${q.incoterm === t ? "selected" : ""}>${t}</option>`
+            ).join("")}
+          </select>
+        </div>
       </div>
       <div class="field-row two">
         <input placeholder="客户 / 公司名称" value="${esc(q.customer.company)}" data-action="cust-company" />
@@ -196,16 +221,16 @@ function renderQuoteTab() {
       </div>
       <div class="photo-field">
         ${
-          q.customer.cardImage
-            ? `<img class="photo-preview" src="${q.customer.cardImage}" />`
+          cardImageUrl
+            ? `<img class="photo-preview clickable" src="${cardImageUrl}" data-action="card-photo-view" />`
             : `<div class="photo-preview empty">名片</div>`
         }
         <div class="photo-field-actions">
           <button type="button" class="btn btn-outline small" data-action="card-scan">${
-            q.customer.cardImage ? "重新拍摄识别" : "拍摄名片自动识别"
+            cardImageUrl ? "重新拍摄识别" : "拍摄名片自动识别"
           }</button>
           ${
-            q.customer.cardImage
+            cardImageUrl
               ? `<button type="button" class="icon-btn danger" data-action="card-clear">删除名片</button>`
               : ""
           }
@@ -250,6 +275,10 @@ function renderQuoteTab() {
     state.currentQuote.currency = e.target.value;
     renderQuoteTab();
   });
+  appContent.querySelector('[data-action="incoterm-change"]').addEventListener("change", (e) => {
+    state.currentQuote.incoterm = e.target.value;
+    persistDraft();
+  });
   appContent.querySelectorAll('[data-action="doctype-set"]').forEach((btn) =>
     btn.addEventListener("click", () => {
       state.currentQuote.docType = btn.dataset.type;
@@ -267,6 +296,9 @@ function renderQuoteTab() {
 
   const cardInput = appContent.querySelector("#card-photo-input");
   appContent.querySelector('[data-action="card-scan"]').addEventListener("click", () => cardInput.click());
+  appContent.querySelector('[data-action="card-photo-view"]')?.addEventListener("click", () => {
+    openImageViewer(cardImageUrl);
+  });
   appContent.querySelector('[data-action="card-text-view"]')?.addEventListener("click", () => {
     openModal(`
       <div class="modal-header">
@@ -277,8 +309,9 @@ function renderQuoteTab() {
       <pre class="ocr-raw-text">${esc(state.currentQuote.customer.cardText || "")}</pre>
     `);
   });
-  appContent.querySelector('[data-action="card-clear"]')?.addEventListener("click", () => {
-    state.currentQuote.customer.cardImage = null;
+  appContent.querySelector('[data-action="card-clear"]')?.addEventListener("click", async () => {
+    if (state.currentQuote.customer.cardImageId) await deleteImage(state.currentQuote.customer.cardImageId);
+    state.currentQuote.customer.cardImageId = null;
     state.currentQuote.customer.cardText = null;
     persistDraft();
     renderQuoteTab();
@@ -290,8 +323,12 @@ function renderQuoteTab() {
     scanBtn.disabled = true;
     scanBtn.textContent = "识别中…";
     try {
-      const cardImage = await compressImageFile(file, 1000, 0.75);
-      state.currentQuote.customer.cardImage = cardImage;
+      const cardDataUrl = await compressImageFile(file, 1000, 0.75);
+      if (state.currentQuote.customer.cardImageId) await deleteImage(state.currentQuote.customer.cardImageId);
+      state.currentQuote.customer.cardImageId = await putImage(cardDataUrl, {
+        kind: "card",
+        ownerId: state.currentQuote.id,
+      });
       const text = await recognizeCardText(file);
       state.currentQuote.customer.cardText = text;
       const fields = parseCardText(text);
@@ -309,7 +346,14 @@ function renderQuoteTab() {
       console.error(err);
       persistDraft();
       renderQuoteTab();
-      toast("识别失败，名片照片已保存，请手动填写信息");
+      openModal(`
+        <div class="modal-header">
+          <h3>识别失败</h3>
+          <button data-action="close-modal" class="icon-btn">✕</button>
+        </div>
+        <p class="hint-text" style="margin-top:0">名片照片已保存，可手动填写信息。具体报错（方便反馈）：</p>
+        <pre class="ocr-raw-text">${esc(err?.stack || err?.message || String(err))}</pre>
+      `);
     }
   });
 
@@ -329,7 +373,8 @@ function bindTextInput(action, onChange) {
   });
 }
 
-function openProductPicker() {
+async function openProductPicker() {
+  const imageMap = await resolveImageURLs(state.products.map((p) => p.imageId));
   const render = (filter = "") => {
     const f = filter.trim().toLowerCase();
     const list = state.products.filter((p) => !f || p.name.toLowerCase().includes(f));
@@ -347,8 +392,8 @@ function openProductPicker() {
                   (p) => `
           <div class="picker-item" data-action="picker-pick" data-id="${p.id}">
             ${
-              p.image
-                ? `<img class="product-thumb" src="${p.image}" />`
+              imageMap.get(p.imageId)
+                ? `<img class="product-thumb" src="${imageMap.get(p.imageId)}" />`
                 : `<div class="product-thumb empty"></div>`
             }
             <div class="item-main">
@@ -393,8 +438,8 @@ function openProductPicker() {
   }
 }
 
-function openQuotePreview() {
-  const html = buildQuoteHtml(state.currentQuote, state.settings, state.products);
+async function openQuotePreview() {
+  const html = await buildQuoteHtml(state.currentQuote, state.settings, state.products);
   openModal(`
     <div class="modal-header">
       <h3>预览</h3>
@@ -437,6 +482,17 @@ function openQuotePreview() {
       btn.textContent = "导出 Excel";
     }
   });
+}
+
+function openImageViewer(url) {
+  if (!url) return;
+  openModal(`
+    <div class="modal-header">
+      <h3>查看图片</h3>
+      <button data-action="close-modal" class="icon-btn">✕</button>
+    </div>
+    <img class="image-viewer-full" src="${url}" />
+  `);
 }
 
 function openSkuPicker(product) {
@@ -491,8 +547,9 @@ function addProductToQuote(productId, sku) {
 }
 
 // ================= PRODUCTS TAB =================
-function renderProductsTab() {
+async function renderProductsTab() {
   const list = state.products;
+  const imageMap = await resolveImageURLs(list.map((p) => p.imageId));
   appContent.innerHTML = `
     <section class="panel">
       <div class="panel-title-row">
@@ -512,8 +569,8 @@ function renderProductsTab() {
                   (p) => `
           <div class="product-card">
             ${
-              p.image
-                ? `<img class="product-thumb" src="${p.image}" />`
+              imageMap.get(p.imageId)
+                ? `<img class="product-thumb clickable" src="${imageMap.get(p.imageId)}" data-action="product-photo-view" data-url="${imageMap.get(p.imageId)}" />`
                 : `<div class="product-thumb empty"></div>`
             }
             <div class="product-card-main">
@@ -539,6 +596,9 @@ function renderProductsTab() {
   `;
 
   appContent.querySelector('[data-action="product-new"]').addEventListener("click", () => openProductForm());
+  appContent.querySelectorAll('[data-action="product-photo-view"]').forEach((img) =>
+    img.addEventListener("click", () => openImageViewer(img.dataset.url))
+  );
   appContent.querySelectorAll('[data-action="product-edit"]').forEach((btn) =>
     btn.addEventListener("click", () =>
       openProductForm(state.products.find((p) => p.id === btn.dataset.id))
@@ -577,7 +637,7 @@ function renderProductsTab() {
       let updated = 0;
       for (const p of products) {
         const existing = state.products.find((x) => x.name === p.name);
-        db.saveProduct(existing ? { ...p, id: existing.id, image: existing.image } : p);
+        db.saveProduct(existing ? { ...p, id: existing.id, imageId: existing.imageId } : p);
         if (existing) updated++;
         else created++;
       }
@@ -619,24 +679,27 @@ function compressImageFile(file, maxDim = 640, quality = 0.6) {
   });
 }
 
-function openProductForm(product) {
+async function openProductForm(product) {
   let tierRows = product?.tiers?.length ? product.tiers.map((t) => ({ ...t })) : [{ minQty: 1, price: 0 }];
   let skuRows = product?.skuOptions?.length ? product.skuOptions.map((s) => ({ ...s })) : [];
-  let photoDataUrl = product?.image || null;
+  const existingImageId = product?.imageId || null;
+  let photoPreviewUrl = existingImageId ? await getImageURL(existingImageId) : null;
+  let newPhotoDataUrl = null;
+  let photoCleared = false;
 
   function photoHtml() {
     return `
       <div class="photo-field">
         ${
-          photoDataUrl
-            ? `<img class="photo-preview" src="${photoDataUrl}" />`
+          photoPreviewUrl
+            ? `<img class="photo-preview" src="${photoPreviewUrl}" />`
             : `<div class="photo-preview empty">无图</div>`
         }
         <div class="photo-field-actions">
           <button type="button" class="btn btn-outline small" data-action="photo-pick">${
-            photoDataUrl ? "更换照片" : "拍照 / 选图"
+            photoPreviewUrl ? "更换照片" : "拍照 / 选图"
           }</button>
-          ${photoDataUrl ? `<button type="button" class="icon-btn danger" data-action="photo-clear">删除</button>` : ""}
+          ${photoPreviewUrl ? `<button type="button" class="icon-btn danger" data-action="photo-clear">删除</button>` : ""}
         </div>
       </div>
       <input type="file" id="f-photo-input" accept="image/*" style="display:none" />
@@ -658,6 +721,7 @@ function openProductForm(product) {
         <div class="sku-option-grid">
           <input placeholder="颜色" value="${esc(s.color || "")}" data-sku="color" data-row="${i}" />
           <input placeholder="克重/容量" value="${esc(s.weight || "")}" data-sku="weight" data-row="${i}" />
+          <input type="number" min="1" placeholder="MOQ" value="${esc(s.moq || "")}" data-sku="moq" data-row="${i}" />
         </div>
       </div>`
       )
@@ -707,7 +771,7 @@ function openProductForm(product) {
         <label>阶梯价（以基准币种 ${esc(state.settings.baseCurrency)} 填写）</label>
         <div id="tier-rows">${tiersHtml()}</div>
         <button class="btn btn-outline small" data-action="tier-add">＋ 加一档</button>
-        <label>SKU 选项（可选，比如颜色 / 克重容量不同的规格）</label>
+        <label>SKU 选项（可选，比如颜色 / 克重容量 / MOQ 不同的规格）</label>
         <div id="sku-rows">${skuRowsHtml()}</div>
         <button class="btn btn-outline small" data-action="sku-add">＋ 添加规格</button>
         <label>备注（可选）</label>
@@ -757,13 +821,13 @@ function openProductForm(product) {
     const skuAddBtn = modalCard.querySelector('[data-action="sku-add"]');
     if (skuAddBtn)
       skuAddBtn.addEventListener("click", () => {
-        skuRows.push({ color: "", weight: "" });
+        skuRows.push({ color: "", weight: "", moq: "" });
         refreshSku();
       });
 
     bindPhotoEvents();
 
-    modalCard.querySelector('[data-action="product-save"]').addEventListener("click", () => {
+    modalCard.querySelector('[data-action="product-save"]').addEventListener("click", async () => {
       const name = modalCard.querySelector("#f-name").value.trim();
       if (!name) {
         toast("请填写商品名称");
@@ -776,11 +840,21 @@ function openProductForm(product) {
         toast("至少需要一档价格");
         return;
       }
-      const cleanSku = skuRows.filter((s) => s.color || s.weight);
+      const cleanSku = skuRows.filter((s) => s.color || s.weight || s.moq);
+
+      let finalImageId = existingImageId;
+      if (photoCleared) {
+        if (existingImageId) await deleteImage(existingImageId);
+        finalImageId = null;
+      } else if (newPhotoDataUrl) {
+        if (existingImageId) await deleteImage(existingImageId);
+        finalImageId = await putImage(newPhotoDataUrl, { kind: "product", ownerId: product?.id || null });
+      }
+
       const saved = db.saveProduct({
         id: product?.id,
         name,
-        image: photoDataUrl,
+        imageId: finalImageId,
         unit: modalCard.querySelector("#f-unit").value.trim() || "件",
         sku: modalCard.querySelector("#f-sku").value.trim(),
         formula: modalCard.querySelector("#f-formula").value.trim(),
@@ -841,14 +915,18 @@ function openProductForm(product) {
     const fileInput = modalCard.querySelector("#f-photo-input");
     modalCard.querySelector('[data-action="photo-pick"]')?.addEventListener("click", () => fileInput.click());
     modalCard.querySelector('[data-action="photo-clear"]')?.addEventListener("click", () => {
-      photoDataUrl = null;
+      newPhotoDataUrl = null;
+      photoPreviewUrl = null;
+      photoCleared = true;
       refreshPhoto();
     });
     fileInput?.addEventListener("change", async (e) => {
       const file = e.target.files[0];
       if (!file) return;
       try {
-        photoDataUrl = await compressImageFile(file);
+        newPhotoDataUrl = await compressImageFile(file);
+        photoPreviewUrl = newPhotoDataUrl;
+        photoCleared = false;
         refreshPhoto();
       } catch (err) {
         console.error(err);
@@ -959,8 +1037,15 @@ function renderHistoryTab() {
 }
 
 // ================= SETTINGS TAB =================
-function renderSettingsTab() {
+function formatBytes(n) {
+  if (!n) return "0 MB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
+async function renderSettingsTab() {
   const s = state.settings;
+  const storage = await getStorageEstimate();
+  const pendingImages = await getPendingImages();
   appContent.innerHTML = `
     <section class="panel">
       <div class="panel-title">公司信息（显示在 PDF 上）</div>
@@ -1019,6 +1104,35 @@ function renderSettingsTab() {
       <input type="file" id="import-file" accept="application/json" style="display:none" />
       <p class="hint-text">导出为 JSON 文件，可用于在展会现场换设备、或防止清除浏览器缓存导致数据丢失。导入会覆盖当前商品、报价单与设置。</p>
     </section>
+
+    <section class="panel">
+      <div class="panel-title">本地存储用量</div>
+      ${
+        storage
+          ? `
+        <div class="storage-bar">
+          <div class="storage-bar-fill" style="width:${Math.min(100, storage.percent * 100).toFixed(1)}%"></div>
+        </div>
+        <p class="hint-text" style="margin-top:6px">已用 ${formatBytes(storage.usage)} / 约 ${formatBytes(
+              storage.quota
+            )}（${(storage.percent * 100).toFixed(1)}%）。图片存在 IndexedDB 里，配额比 localStorage 大得多，接近上限时建议清理。</p>
+      `
+          : `<p class="hint-text">当前浏览器不支持查询存储用量。</p>`
+      }
+      <button class="btn btn-outline full" data-action="clear-image-cache">清理旧图片本地缓存（只保留最近 200 个商品）</button>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">图片云端同步</div>
+      <p class="hint-text" style="margin-top:0">${
+        pendingImages.length
+          ? `还有 ${pendingImages.length} 张图片待同步到云端${navigator.onLine ? "" : "（当前离线，联网后会自动同步）"}`
+          : "所有图片已同步到云端"
+      }</p>
+      <button class="btn btn-outline full" data-action="sync-now" ${
+        pendingImages.length && navigator.onLine ? "" : "disabled"
+      }>立即同步</button>
+    </section>
   `;
 
   document.getElementById("s-company").addEventListener("change", (e) => {
@@ -1052,6 +1166,19 @@ function renderSettingsTab() {
     document.getElementById("import-file").click();
   });
   document.getElementById("import-file").addEventListener("change", handleImportFile);
+  appContent.querySelector('[data-action="clear-image-cache"]').addEventListener("click", async () => {
+    const count = await enforceProductImageLRU(200);
+    renderSettingsTab();
+    toast(count ? `已清理 ${count} 张较久未查看的商品图片本地缓存` : "没有可清理的图片（未同步云端的图片不会被清）");
+  });
+  const syncBtn = appContent.querySelector('[data-action="sync-now"]');
+  syncBtn?.addEventListener("click", async () => {
+    syncBtn.disabled = true;
+    syncBtn.textContent = "同步中…";
+    const { uploaded, failed } = await syncPendingImages();
+    renderSettingsTab();
+    toast(failed ? `同步完成：成功 ${uploaded} 张，失败 ${failed} 张` : `同步完成：${uploaded} 张`);
+  });
 }
 
 function openCurrencyForm() {
@@ -1219,6 +1346,9 @@ window.addEventListener("online", updateOnlineStatus);
 window.addEventListener("offline", updateOnlineStatus);
 updateOnlineStatus();
 
+// 联网时把还没同步的图片传到云端（离线时 syncPendingImages 内部直接跳过）
+window.addEventListener("online", () => syncPendingImages().catch((err) => console.error("图片同步失败", err)));
+
 // ---------------- service worker ----------------
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -1228,4 +1358,45 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-render();
+// 旧版本把图片直接存成 base64 塞进 localStorage 的商品/报价单记录里，第一次用新版本打开时
+// 把它们搬进 IndexedDB，localStorage 里只留一个 imageId 引用（不然 localStorage 配额很快就爆）。
+async function migrateLegacyImages() {
+  let changed = false;
+  for (const p of db.getProducts()) {
+    if (typeof p.image === "string" && p.image.startsWith("data:")) {
+      const imageId = await putImage(p.image, { kind: "product", ownerId: p.id });
+      const { image, ...rest } = p;
+      db.saveProduct({ ...rest, imageId });
+      changed = true;
+    }
+  }
+  for (const q of db.getQuotes()) {
+    if (typeof q.customer?.cardImage === "string" && q.customer.cardImage.startsWith("data:")) {
+      const imageId = await putImage(q.customer.cardImage, { kind: "card", ownerId: q.id });
+      const { cardImage, ...restCustomer } = q.customer;
+      db.saveQuote({ ...q, customer: { ...restCustomer, cardImageId: imageId } });
+      changed = true;
+    }
+  }
+  if (changed) {
+    state.products = db.getProducts();
+    state.quotes = db.getQuotes();
+  }
+}
+
+async function checkStorageUsage() {
+  const estimate = await getStorageEstimate();
+  if (estimate && estimate.percent > 0.8) {
+    toast("本地存储空间快用完了，建议去「设置」清理旧图片缓存");
+  }
+}
+
+migrateLegacyImages()
+  .then(render)
+  .catch((err) => {
+    console.error("图片迁移失败", err);
+    render();
+  });
+enforceProductImageLRU(200).catch((err) => console.error("LRU 清理失败", err));
+checkStorageUsage().catch((err) => console.error("存储用量检查失败", err));
+syncPendingImages().catch((err) => console.error("图片同步失败", err));

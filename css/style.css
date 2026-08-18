@@ -410,6 +410,18 @@ input:focus, select:focus, textarea:focus {
   line-height: 1.6;
 }
 
+.storage-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+.storage-bar-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 999px;
+}
+
 /* ---- modal ---- */
 .modal-backdrop {
   display: none;
@@ -504,6 +516,14 @@ input:focus, select:focus, textarea:focus {
   color: var(--muted);
   font-size: 11px;
 }
+.clickable {
+  cursor: pointer;
+}
+.image-viewer-full {
+  width: 100%;
+  border-radius: 10px;
+  display: block;
+}
 .photo-field-actions {
   display: flex;
   gap: 8px;
@@ -525,7 +545,7 @@ input:focus, select:focus, textarea:focus {
 }
 .sku-option-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 6px;
 }
 .sku-option-grid input {

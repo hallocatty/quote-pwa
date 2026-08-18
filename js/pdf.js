@@ -1,16 +1,21 @@
 // 用 html2canvas 把报价单模板截图，再用 jsPDF 拼成 A4 PDF（多页自动分页）。
 // 用截图而非纯文字方式，是因为 jsPDF 内置字体不支持中文，截图方式直接复用浏览器自身的中文字体渲染。
 import { formatMoney, describeItemSpec, docTypeName } from "./pricing.js";
+import { resolveImageURLs } from "./imagestore.js";
 
-export function buildQuoteHtml(quote, settings, products = []) {
+export async function buildQuoteHtml(quote, settings, products = []) {
+  const imageMap = await resolveImageURLs(
+    quote.items.map((it) => products.find((p) => p.id === it.productId)?.imageId)
+  );
   const rows = quote.items
     .map((it, i) => {
       const product = products.find((p) => p.id === it.productId);
+      const imageUrl = imageMap.get(product?.imageId);
       return `
       <tr>
         <td>${i + 1}</td>
         <td class="pdf-item-cell">
-          ${product?.image ? `<img class="pdf-thumb" src="${product.image}" />` : ""}
+          ${imageUrl ? `<img class="pdf-thumb" src="${imageUrl}" />` : ""}
           <div>
             <div>${escapeHtml(it.name)}</div>
             ${describeItemSpec(it) ? `<div class="pdf-sku">${escapeHtml(describeItemSpec(it))}</div>` : ""}
@@ -53,7 +58,9 @@ export function buildQuoteHtml(quote, settings, products = []) {
             ? `<div>网址 Website：${escapeHtml(quote.customer.website)}</div>`
             : ""
         }
-        <div>日期 Date：${dateStr}　币种 Currency：${quote.currency}</div>
+        <div>日期 Date：${dateStr}　币种 Currency：${quote.currency}${
+    quote.incoterm ? `　贸易术语 Incoterms：${escapeHtml(quote.incoterm)}` : ""
+  }</div>
       </div>
       <table class="pdf-table">
         <thead>
@@ -80,7 +87,7 @@ function escapeHtml(s) {
 
 export async function exportQuotePdf(quote, settings, products = []) {
   const host = document.getElementById("pdf-render-host");
-  host.innerHTML = buildQuoteHtml(quote, settings, products);
+  host.innerHTML = await buildQuoteHtml(quote, settings, products);
   const pageEl = host.querySelector(".pdf-page");
 
   // 等待布局稳定
