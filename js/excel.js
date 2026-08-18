@@ -18,6 +18,76 @@ function loadXlsxScript() {
   return scriptLoadPromise;
 }
 
+// ---------------- 商品表 Excel 导入/模板 ----------------
+// 同一个商品名称可以出现多行（比如不同颜色/克重的规格），会自动合并成一个商品、多条 SKU 规格；
+// 单价只按第一行生效（简单单价，不支持一次性导入阶梯价，导入后可在表单里手动加档）。
+const PRODUCT_TEMPLATE_HEADERS = ["商品名称 Name", "单位 Unit", "商品编码 Code", "成分配方 Formula", "颜色 Color", "克重容量 Weight", "单价 Price", "备注 Note"];
+
+export async function downloadProductTemplate() {
+  await loadXlsxScript();
+  const rows = [
+    PRODUCT_TEMPLATE_HEADERS,
+    ["便携香薰机", "件", "AR-001", "无硅油配方", "白色", "50g", 39.9, "示例行，可删除"],
+    ["便携香薰机", "件", "AR-001", "无硅油配方", "粉色", "50g", 39.9, "同名多行=同一商品的不同规格"],
+  ];
+  const ws = window.XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = [{ wch: 20 }, { wch: 8 }, { wch: 12 }, { wch: 18 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 20 }];
+  const wb = window.XLSX.utils.book_new();
+  window.XLSX.utils.book_append_sheet(wb, ws, "Products");
+  window.XLSX.writeFile(wb, "商品表导入模板-Product Import Template.xlsx");
+}
+
+function pickField(row, ...keys) {
+  for (const key of keys) {
+    for (const k of Object.keys(row)) {
+      if (k.trim().toLowerCase().startsWith(key.toLowerCase())) {
+        const v = String(row[k] ?? "").trim();
+        if (v) return v;
+      }
+    }
+  }
+  return "";
+}
+
+// 解析 Excel 文件，按「商品名称」分组合并成商品数组（每个商品含 tiers/skuOptions），
+// 交给上层去 db.saveProduct（按名称匹配已有商品做更新，否则新增）。
+export async function parseProductExcelFile(file) {
+  await loadXlsxScript();
+  const buf = await file.arrayBuffer();
+  const wb = window.XLSX.read(buf, { type: "array" });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rawRows = window.XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+  const grouped = new Map();
+  let skipped = 0;
+  for (const row of rawRows) {
+    const name = pickField(row, "商品名称", "name");
+    const priceStr = pickField(row, "单价", "price");
+    const price = parseFloat(priceStr);
+    if (!name || !Number.isFinite(price)) {
+      skipped++;
+      continue;
+    }
+    const unit = pickField(row, "单位", "unit") || "件";
+    const code = pickField(row, "商品编码", "编码", "code");
+    const formula = pickField(row, "成分配方", "成分", "配方", "formula");
+    const note = pickField(row, "备注", "note");
+    const color = pickField(row, "颜色", "color");
+    const weight = pickField(row, "克重容量", "克重", "容量", "weight");
+
+    if (!grouped.has(name)) {
+      grouped.set(name, { name, unit, sku: code, formula, note, tiers: [{ minQty: 1, price }], skuOptions: [] });
+    }
+    const product = grouped.get(name);
+    if (color || weight) {
+      const exists = product.skuOptions.some((s) => s.color === color && s.weight === weight);
+      if (!exists) product.skuOptions.push({ color, weight });
+    }
+  }
+
+  return { products: [...grouped.values()], skipped };
+}
+
 export async function exportQuoteExcel(quote, settings, products = []) {
   await loadXlsxScript();
 

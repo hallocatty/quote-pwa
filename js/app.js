@@ -3,7 +3,7 @@ import { tierPrice, convert, formatMoney, describeTiers, skuLabel, describeItemS
 import { exportQuotePdf, buildQuoteHtml } from "./pdf.js";
 import { requestQuoteNumber, requestRevisionNumber } from "./numbering.js";
 import { recognizeCardText, parseCardText } from "./ocr.js";
-import { exportQuoteExcel } from "./excel.js";
+import { exportQuoteExcel, downloadProductTemplate, parseProductExcelFile } from "./excel.js";
 
 function emptyQuote(baseCurrency) {
   return {
@@ -499,6 +499,11 @@ function renderProductsTab() {
         <div class="panel-title">商品表</div>
         <button class="btn btn-primary small" data-action="product-new">＋ 新增商品</button>
       </div>
+      <div class="field-row two">
+        <button class="btn btn-outline small" data-action="product-template">下载导入模板</button>
+        <button class="btn btn-outline small" data-action="product-import">导入 Excel</button>
+      </div>
+      <input type="file" id="product-import-input" accept=".xlsx,.xls,.csv" style="display:none" />
       <div class="product-list">
         ${
           list.length
@@ -549,6 +554,45 @@ function renderProductsTab() {
       }
     })
   );
+
+  appContent.querySelector('[data-action="product-template"]').addEventListener("click", async () => {
+    try {
+      await downloadProductTemplate();
+    } catch (err) {
+      console.error(err);
+      toast("模板下载失败，请重试");
+    }
+  });
+  const importInput = appContent.querySelector("#product-import-input");
+  const importBtn = appContent.querySelector('[data-action="product-import"]');
+  importBtn.addEventListener("click", () => importInput.click());
+  importInput.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    importBtn.disabled = true;
+    importBtn.textContent = "导入中…";
+    try {
+      const { products, skipped } = await parseProductExcelFile(file);
+      let created = 0;
+      let updated = 0;
+      for (const p of products) {
+        const existing = state.products.find((x) => x.name === p.name);
+        db.saveProduct(existing ? { ...p, id: existing.id, image: existing.image } : p);
+        if (existing) updated++;
+        else created++;
+      }
+      state.products = db.getProducts();
+      renderProductsTab();
+      toast(`导入完成：新增 ${created} 个，更新 ${updated} 个${skipped ? `，跳过 ${skipped} 行（缺名称/单价）` : ""}`);
+    } catch (err) {
+      console.error(err);
+      toast("导入失败，请检查文件格式");
+      importBtn.disabled = false;
+      importBtn.textContent = "导入 Excel";
+    } finally {
+      importInput.value = "";
+    }
+  });
 }
 
 // 拍照/选图后压缩到合理体积再存 localStorage（原图直接存会很快把配额吃满）。
