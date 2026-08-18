@@ -1,14 +1,26 @@
 import { db } from "./db.js";
-import { tierPrice, convert, formatMoney, describeTiers } from "./pricing.js";
-import { exportQuotePdf } from "./pdf.js";
+import { tierPrice, convert, formatMoney, describeTiers, skuLabel, describeItemSpec } from "./pricing.js";
+import { exportQuotePdf, buildQuoteHtml } from "./pdf.js";
 import { requestQuoteNumber, requestRevisionNumber } from "./numbering.js";
+import { recognizeCardText, parseCardText } from "./ocr.js";
+import { exportQuoteExcel } from "./excel.js";
 
 function emptyQuote(baseCurrency) {
   return {
     id: null,
     number: null,
     baseNumber: null,
-    customer: { name: "", company: "", contact: "" },
+    customer: {
+      name: "",
+      company: "",
+      contact: "",
+      phone: "",
+      email: "",
+      address: "",
+      website: "",
+      cardImage: null,
+      cardText: null,
+    },
     currency: baseCurrency || "CNY",
     items: [],
     note: "",
@@ -130,6 +142,7 @@ function renderQuoteTab() {
       <div class="item-row">
         <div class="item-main">
           <div class="item-name">${esc(it.name)}</div>
+          ${describeItemSpec(it) ? `<div class="item-sub muted">${esc(describeItemSpec(it))}</div>` : ""}
           <div class="item-sub">${esc(it.unit || "")} · 单价 ${formatMoney(
             it.unitPrice,
             state.settings.currencies,
@@ -164,8 +177,39 @@ function renderQuoteTab() {
         <input placeholder="客户 / 公司名称" value="${esc(q.customer.company)}" data-action="cust-company" />
         <input placeholder="联系人" value="${esc(q.customer.name)}" data-action="cust-name" />
       </div>
+      <div class="field-row two">
+        <input placeholder="手机" value="${esc(q.customer.phone || "")}" data-action="cust-phone" />
+        <input placeholder="邮箱" value="${esc(q.customer.email || "")}" data-action="cust-email" />
+      </div>
       <div class="field-row">
-        <input placeholder="联系方式（电话/微信）" value="${esc(q.customer.contact)}" data-action="cust-contact" />
+        <input placeholder="地址" value="${esc(q.customer.address || "")}" data-action="cust-address" />
+      </div>
+      <div class="field-row two">
+        <input placeholder="网址" value="${esc(q.customer.website || "")}" data-action="cust-website" />
+        <input placeholder="微信 / 其他联系方式" value="${esc(q.customer.contact)}" data-action="cust-contact" />
+      </div>
+      <div class="photo-field">
+        ${
+          q.customer.cardImage
+            ? `<img class="photo-preview" src="${q.customer.cardImage}" />`
+            : `<div class="photo-preview empty">名片</div>`
+        }
+        <div class="photo-field-actions">
+          <button type="button" class="btn btn-outline small" data-action="card-scan">${
+            q.customer.cardImage ? "重新拍摄识别" : "拍摄名片自动识别"
+          }</button>
+          ${
+            q.customer.cardImage
+              ? `<button type="button" class="icon-btn danger" data-action="card-clear">删除名片</button>`
+              : ""
+          }
+          ${
+            q.customer.cardText
+              ? `<button type="button" class="icon-btn" data-action="card-text-view">查看识别原文</button>`
+              : ""
+          }
+        </div>
+        <input type="file" id="card-photo-input" accept="image/*" style="display:none" />
       </div>
     </section>
 
@@ -183,7 +227,7 @@ function renderQuoteTab() {
       <div class="total-amount">合计 ${formatMoney(q.total, state.settings.currencies, q.currency)}</div>
       <div class="total-actions">
         <button class="btn btn-outline" data-action="quote-save">保存</button>
-        <button class="btn btn-primary" data-action="quote-export">导出 PDF</button>
+        <button class="btn btn-primary" data-action="quote-export">预览 / 导出</button>
       </div>
     </div>
   `;
@@ -203,6 +247,59 @@ function renderQuoteTab() {
   bindTextInput("cust-company", (v) => (state.currentQuote.customer.company = v));
   bindTextInput("cust-name", (v) => (state.currentQuote.customer.name = v));
   bindTextInput("cust-contact", (v) => (state.currentQuote.customer.contact = v));
+  bindTextInput("cust-phone", (v) => (state.currentQuote.customer.phone = v));
+  bindTextInput("cust-email", (v) => (state.currentQuote.customer.email = v));
+  bindTextInput("cust-address", (v) => (state.currentQuote.customer.address = v));
+  bindTextInput("cust-website", (v) => (state.currentQuote.customer.website = v));
+
+  const cardInput = appContent.querySelector("#card-photo-input");
+  appContent.querySelector('[data-action="card-scan"]').addEventListener("click", () => cardInput.click());
+  appContent.querySelector('[data-action="card-text-view"]')?.addEventListener("click", () => {
+    openModal(`
+      <div class="modal-header">
+        <h3>识别原文</h3>
+        <button data-action="close-modal" class="icon-btn">✕</button>
+      </div>
+      <p class="hint-text" style="margin-top:0">OCR 逐行原始结果，供核对/手动补填参考：</p>
+      <pre class="ocr-raw-text">${esc(state.currentQuote.customer.cardText || "")}</pre>
+    `);
+  });
+  appContent.querySelector('[data-action="card-clear"]')?.addEventListener("click", () => {
+    state.currentQuote.customer.cardImage = null;
+    state.currentQuote.customer.cardText = null;
+    persistDraft();
+    renderQuoteTab();
+  });
+  cardInput.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const scanBtn = appContent.querySelector('[data-action="card-scan"]');
+    scanBtn.disabled = true;
+    scanBtn.textContent = "识别中…";
+    try {
+      const cardImage = await compressImageFile(file, 1000, 0.75);
+      state.currentQuote.customer.cardImage = cardImage;
+      const text = await recognizeCardText(file);
+      state.currentQuote.customer.cardText = text;
+      const fields = parseCardText(text);
+      const c = state.currentQuote.customer;
+      if (!c.company && fields.company) c.company = fields.company;
+      if (!c.name && fields.name) c.name = fields.name;
+      if (!c.phone && fields.phone) c.phone = fields.phone;
+      if (!c.email && fields.email) c.email = fields.email;
+      if (!c.address && fields.address) c.address = fields.address;
+      if (!c.website && fields.website) c.website = fields.website;
+      persistDraft();
+      renderQuoteTab();
+      toast("名片识别完成，请核对信息是否准确");
+    } catch (err) {
+      console.error(err);
+      persistDraft();
+      renderQuoteTab();
+      toast("识别失败，名片照片已保存，请手动填写信息");
+    }
+  });
+
   const noteEl = appContent.querySelector('[data-action="quote-note"]');
   if (noteEl) noteEl.addEventListener("input", (e) => {
     state.currentQuote.note = e.target.value;
@@ -236,13 +333,21 @@ function openProductPicker() {
                 .map(
                   (p) => `
           <div class="picker-item" data-action="picker-pick" data-id="${p.id}">
-            <div class="item-name">${esc(p.name)}</div>
-            <div class="item-sub">${esc(describeTiers(p, state.settings.currencies, state.settings.baseCurrency))}</div>
+            ${
+              p.image
+                ? `<img class="product-thumb" src="${p.image}" />`
+                : `<div class="product-thumb empty"></div>`
+            }
+            <div class="item-main">
+              <div class="item-name">${esc(p.name)}</div>
+              <div class="item-sub">${esc(describeTiers(p, state.settings.currencies, state.settings.baseCurrency))}</div>
+              ${p.skuOptions?.length ? `<div class="item-sub muted">${p.skuOptions.length} 种规格，选择后可指定</div>` : ""}
+            </div>
           </div>`
                 )
                 .join("")
             : `<div class="empty-hint">${
-                state.products.length ? "没有匹配的商品" : "还没有商品，先去「价目表」新增"
+                state.products.length ? "没有匹配的商品" : "还没有商品，先去「商品表」新增"
               }</div>`
         }
       </div>
@@ -263,18 +368,98 @@ function openProductPicker() {
   function bindPickerClicks() {
     modalCard.querySelectorAll('[data-action="picker-pick"]').forEach((el) => {
       el.addEventListener("click", () => {
-        addProductToQuote(el.dataset.id);
-        closeModal();
+        const product = state.products.find((p) => p.id === el.dataset.id);
+        if (product?.skuOptions?.length) {
+          openSkuPicker(product);
+        } else {
+          addProductToQuote(product.id);
+          closeModal();
+        }
       });
     });
   }
 }
 
-function addProductToQuote(productId) {
+function openQuotePreview() {
+  const html = buildQuoteHtml(state.currentQuote, state.settings, state.products);
+  openModal(`
+    <div class="modal-header">
+      <h3>预览</h3>
+      <button data-action="close-modal" class="icon-btn">✕</button>
+    </div>
+    <div class="pdf-preview-wrap">${html}</div>
+    <div class="field-row two">
+      <button class="btn btn-outline" data-action="preview-export-excel">导出 Excel</button>
+      <button class="btn btn-primary" data-action="preview-confirm-export">确认导出 PDF</button>
+    </div>
+  `);
+  const wrap = modalCard.querySelector(".pdf-preview-wrap");
+  const page = wrap.querySelector(".pdf-page");
+  requestAnimationFrame(() => {
+    const scale = wrap.clientWidth / page.offsetWidth;
+    page.style.transform = `scale(${scale})`;
+    wrap.style.height = `${page.offsetHeight * scale}px`;
+  });
+  modalCard.querySelector('[data-action="preview-confirm-export"]').addEventListener("click", () => {
+    closeModal();
+    exportQuotePdf(state.currentQuote, state.settings, state.products)
+      .then(() => toast("PDF 已导出"))
+      .catch((err) => {
+        console.error(err);
+        toast("导出失败，请重试");
+      });
+  });
+  modalCard.querySelector('[data-action="preview-export-excel"]').addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = "生成中…";
+    try {
+      await exportQuoteExcel(state.currentQuote, state.settings, state.products);
+      toast("Excel 已导出");
+    } catch (err) {
+      console.error(err);
+      toast("导出失败，请重试");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "导出 Excel";
+    }
+  });
+}
+
+function openSkuPicker(product) {
+  openModal(`
+    <div class="modal-header">
+      <h3>选择规格 · ${esc(product.name)}</h3>
+      <button data-action="close-modal" class="icon-btn">✕</button>
+    </div>
+    ${product.formula ? `<p class="hint-text" style="margin-top:0">成分/配方：${esc(product.formula)}</p>` : ""}
+    <div class="picker-list">
+      ${product.skuOptions
+        .map(
+          (s, i) => `
+        <div class="picker-item" data-action="sku-pick" data-index="${i}">
+          <div class="item-main">
+            <div class="item-name">${esc(skuLabel(s) || `规格 ${i + 1}`)}</div>
+          </div>
+        </div>`
+        )
+        .join("")}
+    </div>
+  `);
+  modalCard.querySelectorAll('[data-action="sku-pick"]').forEach((el) => {
+    el.addEventListener("click", () => {
+      addProductToQuote(product.id, product.skuOptions[+el.dataset.index]);
+      closeModal();
+    });
+  });
+}
+
+function addProductToQuote(productId, sku) {
   const product = state.products.find((p) => p.id === productId);
   if (!product) return;
   const q = state.currentQuote;
-  const existing = q.items.find((it) => it.productId === productId);
+  const skuKey = sku ? skuLabel(sku) : null;
+  const existing = q.items.find((it) => it.productId === productId && skuLabel(it.sku) === (skuKey || ""));
   if (existing) {
     existing.qty += 1;
   } else {
@@ -282,6 +467,8 @@ function addProductToQuote(productId) {
       productId,
       name: product.name,
       unit: product.unit,
+      formula: product.formula || "",
+      sku: sku || null,
       qty: 1,
       unitPrice: 0,
       subtotal: 0,
@@ -296,7 +483,7 @@ function renderProductsTab() {
   appContent.innerHTML = `
     <section class="panel">
       <div class="panel-title-row">
-        <div class="panel-title">商品价目表</div>
+        <div class="panel-title">商品表</div>
         <button class="btn btn-primary small" data-action="product-new">＋ 新增商品</button>
       </div>
       <div class="product-list">
@@ -306,12 +493,19 @@ function renderProductsTab() {
                 .map(
                   (p) => `
           <div class="product-card">
+            ${
+              p.image
+                ? `<img class="product-thumb" src="${p.image}" />`
+                : `<div class="product-thumb empty"></div>`
+            }
             <div class="product-card-main">
               <div class="item-name">${esc(p.name)}</div>
               <div class="item-sub">${esc(
                 describeTiers(p, state.settings.currencies, state.settings.baseCurrency)
               )}</div>
-              ${p.sku ? `<div class="item-sub muted">SKU: ${esc(p.sku)}</div>` : ""}
+              ${p.sku ? `<div class="item-sub muted">编码: ${esc(p.sku)}</div>` : ""}
+              ${p.formula ? `<div class="item-sub muted">配方: ${esc(p.formula)}</div>` : ""}
+              ${p.skuOptions?.length ? `<div class="item-sub muted">${p.skuOptions.length} 种规格</div>` : ""}
             </div>
             <div class="product-card-actions">
               <button class="icon-btn" data-action="product-edit" data-id="${p.id}">编辑</button>
@@ -344,8 +538,74 @@ function renderProductsTab() {
   );
 }
 
+// 拍照/选图后压缩到合理体积再存 localStorage（原图直接存会很快把配额吃满）。
+function compressImageFile(file, maxDim = 640, quality = 0.6) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("图片加载失败"));
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function openProductForm(product) {
   let tierRows = product?.tiers?.length ? product.tiers.map((t) => ({ ...t })) : [{ minQty: 1, price: 0 }];
+  let skuRows = product?.skuOptions?.length ? product.skuOptions.map((s) => ({ ...s })) : [];
+  let photoDataUrl = product?.image || null;
+
+  function photoHtml() {
+    return `
+      <div class="photo-field">
+        ${
+          photoDataUrl
+            ? `<img class="photo-preview" src="${photoDataUrl}" />`
+            : `<div class="photo-preview empty">无图</div>`
+        }
+        <div class="photo-field-actions">
+          <button type="button" class="btn btn-outline small" data-action="photo-pick">${
+            photoDataUrl ? "更换照片" : "拍照 / 选图"
+          }</button>
+          ${photoDataUrl ? `<button type="button" class="icon-btn danger" data-action="photo-clear">删除</button>` : ""}
+        </div>
+      </div>
+      <input type="file" id="f-photo-input" accept="image/*" style="display:none" />
+    `;
+  }
+
+  function skuRowsHtml() {
+    if (!skuRows.length) {
+      return `<div class="empty-hint" style="padding:10px 4px">未设置 SKU 选项，报价时按商品直接下单</div>`;
+    }
+    return skuRows
+      .map(
+        (s, i) => `
+      <div class="sku-option-card">
+        <div class="sku-option-card-header">
+          <span>规格 ${i + 1}</span>
+          <button type="button" class="icon-btn danger" data-action="sku-remove" data-row="${i}">✕</button>
+        </div>
+        <div class="sku-option-grid">
+          <input placeholder="颜色" value="${esc(s.color || "")}" data-sku="color" data-row="${i}" />
+          <input placeholder="克重/容量" value="${esc(s.weight || "")}" data-sku="weight" data-row="${i}" />
+        </div>
+      </div>`
+      )
+      .join("");
+  }
 
   function tiersHtml() {
     return tierRows
@@ -373,19 +633,26 @@ function openProductForm(product) {
       <div class="form-body">
         <label>商品名称 *</label>
         <input id="f-name" value="${esc(product?.name || "")}" placeholder="例如：便携香薰机" />
+        <label>商品照片（可选）</label>
+        <div id="photo-area">${photoHtml()}</div>
         <div class="field-row two">
           <div>
             <label>单位</label>
             <input id="f-unit" value="${esc(product?.unit || "件")}" placeholder="件 / 箱 / 套" />
           </div>
           <div>
-            <label>SKU（可选）</label>
+            <label>商品编码（可选）</label>
             <input id="f-sku" value="${esc(product?.sku || "")}" placeholder="内部编码" />
           </div>
         </div>
+        <label>成分/配方（可选，同一商品各规格通用）</label>
+        <input id="f-formula" value="${esc(product?.formula || "")}" placeholder="例如：无硅油配方" />
         <label>阶梯价（以基准币种 ${esc(state.settings.baseCurrency)} 填写）</label>
         <div id="tier-rows">${tiersHtml()}</div>
         <button class="btn btn-outline small" data-action="tier-add">＋ 加一档</button>
+        <label>SKU 选项（可选，比如颜色 / 克重容量不同的规格）</label>
+        <div id="sku-rows">${skuRowsHtml()}</div>
+        <button class="btn btn-outline small" data-action="sku-add">＋ 添加规格</button>
         <label>备注（可选）</label>
         <textarea id="f-note" placeholder="供货说明等">${esc(product?.note || "")}</textarea>
         <button class="btn btn-primary full" data-action="product-save">保存商品</button>
@@ -416,6 +683,29 @@ function openProductForm(product) {
         tierRows.push({ minQty: 1, price: 0 });
         refreshTiers();
       });
+
+    modalCard.querySelectorAll("[data-sku]").forEach((input) => {
+      input.addEventListener("input", (e) => {
+        const row = +e.target.dataset.row;
+        const field = e.target.dataset.sku;
+        skuRows[row][field] = e.target.value;
+      });
+    });
+    modalCard.querySelectorAll('[data-action="sku-remove"]').forEach((btn) =>
+      btn.addEventListener("click", () => {
+        skuRows.splice(+btn.dataset.row, 1);
+        refreshSku();
+      })
+    );
+    const skuAddBtn = modalCard.querySelector('[data-action="sku-add"]');
+    if (skuAddBtn)
+      skuAddBtn.addEventListener("click", () => {
+        skuRows.push({ color: "", weight: "" });
+        refreshSku();
+      });
+
+    bindPhotoEvents();
+
     modalCard.querySelector('[data-action="product-save"]').addEventListener("click", () => {
       const name = modalCard.querySelector("#f-name").value.trim();
       if (!name) {
@@ -429,13 +719,17 @@ function openProductForm(product) {
         toast("至少需要一档价格");
         return;
       }
+      const cleanSku = skuRows.filter((s) => s.color || s.weight);
       const saved = db.saveProduct({
         id: product?.id,
         name,
+        image: photoDataUrl,
         unit: modalCard.querySelector("#f-unit").value.trim() || "件",
         sku: modalCard.querySelector("#f-sku").value.trim(),
+        formula: modalCard.querySelector("#f-formula").value.trim(),
         note: modalCard.querySelector("#f-note").value.trim(),
         tiers: cleanTiers,
+        skuOptions: cleanSku,
       });
       state.products = db.getProducts();
       closeModal();
@@ -460,6 +754,50 @@ function openProductForm(product) {
         refreshTiers();
       })
     );
+  }
+
+  function refreshSku() {
+    const el = modalCard.querySelector("#sku-rows");
+    el.innerHTML = skuRowsHtml();
+    modalCard.querySelectorAll("[data-sku]").forEach((input) => {
+      input.addEventListener("input", (e) => {
+        const row = +e.target.dataset.row;
+        const field = e.target.dataset.sku;
+        skuRows[row][field] = e.target.value;
+      });
+    });
+    modalCard.querySelectorAll('[data-action="sku-remove"]').forEach((btn) =>
+      btn.addEventListener("click", () => {
+        skuRows.splice(+btn.dataset.row, 1);
+        refreshSku();
+      })
+    );
+  }
+
+  function refreshPhoto() {
+    const el = modalCard.querySelector("#photo-area");
+    el.innerHTML = photoHtml();
+    bindPhotoEvents();
+  }
+
+  function bindPhotoEvents() {
+    const fileInput = modalCard.querySelector("#f-photo-input");
+    modalCard.querySelector('[data-action="photo-pick"]')?.addEventListener("click", () => fileInput.click());
+    modalCard.querySelector('[data-action="photo-clear"]')?.addEventListener("click", () => {
+      photoDataUrl = null;
+      refreshPhoto();
+    });
+    fileInput?.addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        photoDataUrl = await compressImageFile(file);
+        refreshPhoto();
+      } catch (err) {
+        console.error(err);
+        toast("图片处理失败，请重试");
+      }
+    });
   }
 }
 
@@ -599,7 +937,7 @@ function renderSettingsTab() {
           )
           .join("")}
       </div>
-      <p class="hint-text">汇率含义：1 基准币种 = 该数值 × 目标币种。商品价目表中的价格以基准币种（${esc(
+      <p class="hint-text">汇率含义：1 基准币种 = 该数值 × 目标币种。商品表中的价格以基准币种（${esc(
         s.baseCurrency
       )}）填写，修改基准币种不会自动换算已录入的商品价格。</p>
     </section>
@@ -793,12 +1131,7 @@ document.addEventListener("click", async (e) => {
         state.quotes = db.getQuotes();
       }
       renderQuoteTab();
-      exportQuotePdf(state.currentQuote, state.settings)
-        .then(() => toast("PDF 已导出"))
-        .catch((err) => {
-          console.error(err);
-          toast("导出失败，请重试");
-        });
+      openQuotePreview();
       break;
     }
   }

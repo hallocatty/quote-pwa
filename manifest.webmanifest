@@ -1,6 +1,6 @@
 {
-  "name": "展会报价单",
-  "short_name": "展会报价",
+  "name": "LE BEAU STUDIO LTD. 报价单",
+  "short_name": "LE BEAU",
   "description": "展会现场离线报价工具",
   "start_url": "./index.html",
   "scope": "./",

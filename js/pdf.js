@@ -1,20 +1,27 @@
 // 用 html2canvas 把报价单模板截图，再用 jsPDF 拼成 A4 PDF（多页自动分页）。
 // 用截图而非纯文字方式，是因为 jsPDF 内置字体不支持中文，截图方式直接复用浏览器自身的中文字体渲染。
-import { formatMoney } from "./pricing.js";
+import { formatMoney, describeItemSpec } from "./pricing.js";
 
-function buildQuoteHtml(quote, settings) {
+export function buildQuoteHtml(quote, settings, products = []) {
   const rows = quote.items
-    .map(
-      (it, i) => `
+    .map((it, i) => {
+      const product = products.find((p) => p.id === it.productId);
+      return `
       <tr>
         <td>${i + 1}</td>
-        <td>${escapeHtml(it.name)}</td>
+        <td class="pdf-item-cell">
+          ${product?.image ? `<img class="pdf-thumb" src="${product.image}" />` : ""}
+          <div>
+            <div>${escapeHtml(it.name)}</div>
+            ${describeItemSpec(it) ? `<div class="pdf-sku">${escapeHtml(describeItemSpec(it))}</div>` : ""}
+          </div>
+        </td>
         <td>${escapeHtml(it.unit || "")}</td>
         <td class="num">${it.qty}</td>
         <td class="num">${formatMoney(it.unitPrice, quote.currencies, quote.currency)}</td>
         <td class="num">${formatMoney(it.subtotal, quote.currencies, quote.currency)}</td>
-      </tr>`
-    )
+      </tr>`;
+    })
     .join("");
 
   const dateStr = new Date(quote.createdAt || Date.now()).toLocaleDateString("zh-CN");
@@ -26,21 +33,36 @@ function buildQuoteHtml(quote, settings) {
         <div class="pdf-title">报价单 QUOTATION</div>
       </div>
       <div class="pdf-meta">
-        ${quote.number ? `<div>编号：${escapeHtml(quote.number)}</div>` : ""}
-        <div>客户 / 公司：${escapeHtml(quote.customer.company || "")}</div>
-        <div>联系人：${escapeHtml(quote.customer.name || "")}　联系方式：${escapeHtml(
-    quote.customer.contact || ""
-  )}</div>
-        <div>日期：${dateStr}　币种：${quote.currency}</div>
+        ${quote.number ? `<div>编号 No.：${escapeHtml(quote.number)}</div>` : ""}
+        <div>客户 / 公司 Client：${escapeHtml(quote.customer.company || "")}</div>
+        <div>联系人 Contact：${escapeHtml(quote.customer.name || "")}　手机 Phone：${escapeHtml(
+    quote.customer.phone || ""
+  )}　微信/其他 WeChat/Other：${escapeHtml(quote.customer.contact || "")}</div>
+        ${
+          quote.customer.email
+            ? `<div>邮箱 Email：${escapeHtml(quote.customer.email)}</div>`
+            : ""
+        }
+        ${
+          quote.customer.address
+            ? `<div>地址 Address：${escapeHtml(quote.customer.address)}</div>`
+            : ""
+        }
+        ${
+          quote.customer.website
+            ? `<div>网址 Website：${escapeHtml(quote.customer.website)}</div>`
+            : ""
+        }
+        <div>日期 Date：${dateStr}　币种 Currency：${quote.currency}</div>
       </div>
       <table class="pdf-table">
         <thead>
-          <tr><th>#</th><th>商品名称</th><th>单位</th><th>数量</th><th>单价</th><th>小计</th></tr>
+          <tr><th>#</th><th>商品名称 Item</th><th>单位 Unit</th><th>数量 Qty</th><th>单价 Unit Price</th><th>小计 Subtotal</th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
-      <div class="pdf-total">合计：${formatMoney(quote.total, quote.currencies, quote.currency)}</div>
-      ${quote.note ? `<div class="pdf-note">备注：${escapeHtml(quote.note)}</div>` : ""}
+      <div class="pdf-total">合计 Total：${formatMoney(quote.total, quote.currencies, quote.currency)}</div>
+      ${quote.note ? `<div class="pdf-note">备注 Note：${escapeHtml(quote.note)}</div>` : ""}
       <div class="pdf-footer">${escapeHtml(settings.companyContact || "")}</div>
     </div>
   `;
@@ -56,9 +78,9 @@ function escapeHtml(s) {
   }[c]));
 }
 
-export async function exportQuotePdf(quote, settings) {
+export async function exportQuotePdf(quote, settings, products = []) {
   const host = document.getElementById("pdf-render-host");
-  host.innerHTML = buildQuoteHtml(quote, settings);
+  host.innerHTML = buildQuoteHtml(quote, settings, products);
   const pageEl = host.querySelector(".pdf-page");
 
   // 等待布局稳定

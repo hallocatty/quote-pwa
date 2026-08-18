@@ -25,7 +25,7 @@ function uid() {
 }
 
 const DEFAULT_SETTINGS = {
-  companyName: "我的公司",
+  companyName: "LE BEAU STUDIO LTD. 浙江傲寒服饰有限公司",
   companyContact: "",
   entity: "LB",
   baseCurrency: "CNY",
