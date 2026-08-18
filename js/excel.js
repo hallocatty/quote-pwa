@@ -1,6 +1,6 @@
 // 报价单导出 Excel（SheetJS，纯前端离线生成，不依赖后端）。懒加载，只有第一次点导出 Excel 才会去下载库文件，
 // 之后由 service worker 缓存离线可用。
-import { formatMoney, describeItemSpec } from "./pricing.js";
+import { formatMoney, describeItemSpec, docTypeName } from "./pricing.js";
 
 const XLSX_URL = new URL("../vendor/xlsx.full.min.js", import.meta.url).href;
 
@@ -22,8 +22,10 @@ export async function exportQuoteExcel(quote, settings, products = []) {
   await loadXlsxScript();
 
   const dateStr = new Date(quote.createdAt || Date.now()).toLocaleDateString("zh-CN");
+  const docName = docTypeName(quote.docType);
   const rows = [
     [settings.companyName || ""],
+    [`${docName.zh} ${docName.en}`],
     [quote.number ? `编号 / No.: ${quote.number}` : ""],
     [`客户/公司 Client: ${quote.customer.company || ""}`],
     [
@@ -64,9 +66,9 @@ export async function exportQuoteExcel(quote, settings, products = []) {
   ];
 
   const wb = window.XLSX.utils.book_new();
-  window.XLSX.utils.book_append_sheet(wb, ws, "Quotation");
+  window.XLSX.utils.book_append_sheet(wb, ws, docName.en);
 
-  const fileName = `报价单-${quote.number ? quote.number + "-" : ""}${(
+  const fileName = `${docName.zh}-${quote.number ? quote.number + "-" : ""}${(
     quote.customer.company || quote.customer.name || "客户"
   ).replace(/[\\/:*?"<>|]/g, "_")}-${new Date(quote.createdAt || Date.now()).toISOString().slice(0, 10)}.xlsx`;
   window.XLSX.writeFile(wb, fileName);

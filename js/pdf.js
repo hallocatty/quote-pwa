@@ -1,6 +1,6 @@
 // 用 html2canvas 把报价单模板截图，再用 jsPDF 拼成 A4 PDF（多页自动分页）。
 // 用截图而非纯文字方式，是因为 jsPDF 内置字体不支持中文，截图方式直接复用浏览器自身的中文字体渲染。
-import { formatMoney, describeItemSpec } from "./pricing.js";
+import { formatMoney, describeItemSpec, docTypeName } from "./pricing.js";
 
 export function buildQuoteHtml(quote, settings, products = []) {
   const rows = quote.items
@@ -30,7 +30,7 @@ export function buildQuoteHtml(quote, settings, products = []) {
     <div class="pdf-page">
       <div class="pdf-header">
         <div class="pdf-company">${escapeHtml(settings.companyName || "")}</div>
-        <div class="pdf-title">报价单 QUOTATION</div>
+        <div class="pdf-title">${docTypeName(quote.docType).zh} ${docTypeName(quote.docType).en}</div>
       </div>
       <div class="pdf-meta">
         ${quote.number ? `<div>编号 No.：${escapeHtml(quote.number)}</div>` : ""}
@@ -135,7 +135,7 @@ export async function exportQuotePdf(quote, settings, products = []) {
 
   host.innerHTML = "";
 
-  const fileName = `报价单-${quote.number ? quote.number + "-" : ""}${(
+  const fileName = `${docTypeName(quote.docType).zh}-${quote.number ? quote.number + "-" : ""}${(
     quote.customer.company || quote.customer.name || "客户"
   ).replace(/[\\/:*?"<>|]/g, "_")}-${new Date(quote.createdAt || Date.now()).toISOString().slice(0, 10)}.pdf`;
   pdf.save(fileName);

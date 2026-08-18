@@ -53,6 +53,7 @@ const state = {
   quotes: db.getQuotes(),
   currentQuote: initialDraft || emptyQuote(initialSettings.baseCurrency),
   editingQuoteId: initialDraft ? initialDraft.id || null : null,
+  historyFilter: "QT",
 };
 
 function esc(s) {
@@ -815,10 +816,15 @@ function openProductForm(product) {
 
 // ================= HISTORY TAB =================
 function renderHistoryTab() {
-  const list = state.quotes;
+  const filter = state.historyFilter || "QT";
+  const list = state.quotes.filter((q) => (q.docType || "QT") === filter);
   appContent.innerHTML = `
+    <div class="doctype-toggle">
+      <button type="button" class="${filter !== "EQ" ? "active" : ""}" data-action="history-filter-set" data-type="QT">报价 Quotation</button>
+      <button type="button" class="${filter === "EQ" ? "active" : ""}" data-action="history-filter-set" data-type="EQ">询价 Enquiry</button>
+    </div>
     <section class="panel">
-      <div class="panel-title">历史报价单</div>
+      <div class="panel-title">${filter === "EQ" ? "历史询价单" : "历史报价单"}</div>
       <div class="history-list">
         ${
           list.length
@@ -846,12 +852,18 @@ function renderHistoryTab() {
           </div>`;
                 })
                 .join("")
-            : `<div class="empty-hint">还没有保存过报价单</div>`
+            : `<div class="empty-hint">${filter === "EQ" ? "还没有保存过询价单" : "还没有保存过报价单"}</div>`
         }
       </div>
     </section>
   `;
 
+  appContent.querySelectorAll('[data-action="history-filter-set"]').forEach((btn) =>
+    btn.addEventListener("click", () => {
+      state.historyFilter = btn.dataset.type;
+      renderHistoryTab();
+    })
+  );
   appContent.querySelectorAll('[data-action="history-open"]').forEach((el) =>
     el.addEventListener("click", () => {
       const q = state.quotes.find((x) => x.id === el.dataset.id);

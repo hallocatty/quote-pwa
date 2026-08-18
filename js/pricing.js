@@ -1,5 +1,10 @@
 // 阶梯价与多币种换算逻辑
 
+// 单据类型的中英文名称：QT=报价（给客户），EQ=询价（给供应商）
+export function docTypeName(docType) {
+  return docType === "EQ" ? { zh: "询价单", en: "ENQUIRY" } : { zh: "报价单", en: "QUOTATION" };
+}
+
 // 根据数量在阶梯表中找到适用单价（阶梯表存的是产品基准币种下的价格）
 export function tierPrice(product, qty) {
   const tiers = [...(product.tiers || [])].sort((a, b) => a.minQty - b.minQty);
